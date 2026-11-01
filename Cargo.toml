@@ -1,0 +1,17 @@
+[package]
+name = "meteor_horizon"
+version = "0.1.0"
+edition = "2021"
+description = "Meteor Horizon Lite: ESP, Anchor Macro, X-Ray, Auto Totem and a ClickGUI for Horizon"
+license = "MIT"
+
+# runtime.rs is both the bundle's library (so `cargo test` works on the logic,
+# exactly as Horizon's own native mods do it) and the module the mixin tool adds
+# to crates/horizon-client/src/game.rs as `game::official_meteor_horizon`.
+[lib]
+name = "meteor_horizon"
+path = "runtime.rs"
+
+# No dependencies on purpose: a native mod's bundle crate may only name crates
+# already present in Horizon's Cargo.lock, and the logic needs nothing.
+[dependencies]
