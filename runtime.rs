@@ -793,6 +793,15 @@ pub fn distance(a: [f64; 3], b: [f64; 3]) -> f64 {
     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
 }
 
+/// ARGB as the renderer wants it: linear RGBA, 0..1.
+pub fn argb_to_rgba(argb: u32) -> [f32; 4] {
+    let a = ((argb >> 24) & 0xFF) as f32 / 255.0;
+    let r = ((argb >> 16) & 0xFF) as f32 / 255.0;
+    let g = ((argb >> 8) & 0xFF) as f32 / 255.0;
+    let b = (argb & 0xFF) as f32 / 255.0;
+    [r, g, b, a]
+}
+
 /// Marks the renderer's cached GPU objects as belonging to a dead world.
 pub fn reset_renderer() {
     with(|live| {
@@ -1190,6 +1199,14 @@ mod tests {
         let kept = esp_targets(&targets, [0.0; 3], &s, 3);
         assert_eq!(kept.len(), 3);
         assert_eq!(kept[0].name, "p1", "nearest kept, farthest dropped");
+    }
+
+    #[test]
+    fn argb_becomes_rgba() {
+        assert_eq!(argb_to_rgba(0xFF_00_00_00), [0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(argb_to_rgba(0x00_FF_FF_FF), [1.0, 1.0, 1.0, 0.0]);
+        let half = argb_to_rgba(0x80_80_80_80);
+        assert!((half[3] - 128.0 / 255.0).abs() < 1e-6);
     }
 
     #[test]

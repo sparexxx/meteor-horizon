@@ -25,7 +25,8 @@ This matters more than anything else here, so it is first.
 | `visuals.rs` — X-Ray block rims | Written; `NativeBlockRim { pos, argb, width }` copied from the source. Fed by a scan that is **not** implemented (SEAM 1) |
 | `tick.rs` — per-tick cache | Clock and caches written; the two world queries are **SEAM 1** and return empty until filled in |
 | `frame.rs` — frame clock | Clock written; the Anchor and Auto Totem **execution** are SEAM 3 and SEAM 4 |
-| `world_drawn.rs` — 3D ESP geometry | The box geometry, projection and render pass are real. It needs a **bridge module** (SEAM 2) because the render crate cannot see the game crate |
+| `bridge.rs` — cross-crate ESP state + wgpu pipeline | **Done.** Public support module in `horizon-client-render`; the game crate publishes boxes, the renderer reads them |
+| `world_drawn.rs` — 3D ESP geometry | Done: reads the bridge, transforms by `view_proj`, depth-tests against the world's depth. Draws nothing until SEAM 1 supplies targets |
 | `horizon-mixin.toml` | Written; `horizon_revision` **must be replaced** with your clone's commit |
 
 **None of this has been compiled.** The session had no working terminal — every command
@@ -43,17 +44,12 @@ be read (the hook source is larger than one fetch). Everything around them is do
    `native_entities`/`native_players` and for API 20's `native_block`, whose signature
    takes a position and returns a state. A helper is compiled *inside* its target
    function, so reading the client's entity table and level directly also works.
-2. **`world_drawn.rs` → `crate::gfx::meteor_bridge`.** The render crate cannot reference
-   the game crate (the dependency runs the other way), so the ESP target list must reach
-   it another way. Add a support module to `horizon_client_render` (horizon-mixins 0.4.0
-   documents same-crate support modules) exporting:
-   ```rust
-   pub fn boxes() -> Option<Vec<Box3>>;                     // None = nothing to draw
-   pub fn pipeline(device: &wgpu::Device, format: wgpu::TextureFormat) -> Option<&'static EspResources>;
-   pub struct Box3 { pub x: f64, pub y: f64, pub z: f64, pub width: f32, pub height: f32, pub color: [f32; 4] }
-   ```
-   The game side writes the boxes on the tick thread; the render side reads them on the
-   render thread, so the bridge needs a lock or a channel.
+2. ~~**`world_drawn.rs` → `crate::gfx::meteor_bridge`.**~~ **Solved** by `bridge.rs`, a
+   `visibility = "pub"` support module on
+   `crates/horizon-client-render/src/gfx/native_render.rs`. The game crate calls
+   `horizon_client_render::gfx::native_render::meteor_bridge::set_boxes(..)`; the render
+   helper reads it as the sibling `meteor_bridge::boxes()`. A `Mutex` covers the tick
+   thread / render thread split, and a poisoned lock yields an empty list, never a panic.
 3. **`frame.rs` → Anchor Macro execution.** `anchor_next()` already returns
    `PlaceObsidian` / `PlaceAnchor` / `Charge` / `Detonate`. Firing it needs the client's
    use/attack path (API 13 and 14 *observe* a use; they do not perform one).

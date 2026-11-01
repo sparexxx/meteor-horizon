@@ -1,127 +1,105 @@
 // Genuine 3D Player ESP, drawn over the finished world.
 //
-// This helper is compiled inside `horizon_client_render::gfx::native_render::
-// native_world_drawn`, i.e. in the *render* crate. That crate cannot see
-// `crate::game::official_meteor_horizon` (the game crate depends on the render
-// crate, never the other way), so the target list arrives through a small
-// bridge module that the bundle adds to the render crate — SEAM 2b in the
-// README explains exactly what to add. Everything drawn here is real geometry:
-// twelve camera-relative line segments per box, transformed by the frame's own
-// `view_proj` and depth-tested against `world.depth`.
+// Compiled inside `horizon_client_render::gfx::native_render::native_world_drawn`,
+// so `meteor_bridge` (the support module added to this same file by bridge.rs)
+// is a sibling module and resolves directly.
+//
+// No game state is touched here: the tick thread published the boxes through
+// the bridge, and this only transforms and draws them. The depth test uses the
+// world's own depth buffer, so boxes are hidden behind terrain instead of
+// floating on top of it.
 fn meteor_world_drawn(world: &mut crate::gfx::native_render::WorldDrawn<'_>) {
-    // The bridge: the render crate's copy of the ESP targets.
-    let Some(boxes) = crate::gfx::meteor_bridge::boxes() else {
-        return;
-    };
+    let boxes = meteor_bridge::boxes();
     if boxes.is_empty() {
         return;
     }
 
-    // Camera-relative corners of each box, as clip space.
-    let mut verts: Vec<[f32; 3]> = Vec::with_capacity(boxes.len() * 24);
-    let mut colors: Vec<[f32; 4]> = Vec::with_capacity(boxes.len() * 24);
+    // Vertices are built in bytes so no vertex type or extra crate is needed:
+    // eight f32s per vertex (clip x,y,z,w then r,g,b,a), two vertices a line.
+    let mut bytes: Vec<u8> = Vec::with_capacity(boxes.len() * 24 * 32);
+    let mut vertex_count: u32 = 0;
+
     for b in &boxes {
-        // World position to camera-relative.
-        let x = (b.x - world.camera.x) as f32;
-        let y = (b.y - world.camera.y) as f32;
-        let z = (b.z - world.camera.z) as f32;
-        let (w, h) = (b.width, b.height);
-        let min = [x - w * 0.5, y, z - w * 0.5];
-        let max = [x + w * 0.5, y + h, z + w * 0.5];
-        let c = b.color;
-        push_box(&mut verts, &mut colors, min, max, c);
+        // World position to camera-relative, which is what view_proj expects.
+        let cx = (b.x - world.camera.x) as f32;
+        let cy = (b.y - world.camera.y) as f32;
+        let cz = (b.z - world.camera.z) as f32;
+        let hw = b.width * 0.5;
+        let y0 = cy;
+        let y1 = cy + b.height;
+        let corners = [
+            [cx - hw, y0, cz - hw],
+            [cx + hw, y0, cz - hw],
+            [cx + hw, y0, cz + hw],
+            [cx - hw, y0, cz + hw],
+            [cx - hw, y1, cz - hw],
+            [cx + hw, y1, cz - hw],
+            [cx + hw, y1, cz + hw],
+            [cx - hw, y1, cz + hw],
+        ];
+        const EDGES: [(usize, usize); 12] = [
+            (0, 1),
+            (1, 2),
+            (2, 3),
+            (3, 0),
+            (4, 5),
+            (5, 6),
+            (6, 7),
+            (7, 4),
+            (0, 4),
+            (1, 5),
+            (2, 6),
+            (3, 7),
+        ];
+        for (a, b2) in EDGES {
+            for corner in [corners[a], corners[b2]] {
+                let clip = world.view_proj * glam::Vec4::new(corner[0], corner[1], corner[2], 1.0);
+                for v in [clip.x, clip.y, clip.z, clip.w] {
+                    bytes.extend_from_slice(&v.to_le_bytes());
+                }
+                for c in b.color {
+                    bytes.extend_from_slice(&c.to_le_bytes());
+                }
+                vertex_count += 1;
+            }
+        }
     }
 
-    // Every pair of vertices is one line.
-    let count = verts.len() as u32;
+    let Some(resources) = meteor_bridge::pipeline(world.device, world.color_format) else {
+        return;
+    };
 
-    // Positions are transformed on the CPU with the frame's own matrix, so the
-    // shader stays trivial and needs no uniform buffer of its own.
-    let mut gpu: Vec<([f32; 4], [f32; 4])> = Vec::with_capacity(verts.len());
-    for (i, p) in verts.iter().enumerate() {
-        let v = world.view_proj * glam::Vec4::new(p[0], p[1], p[2], 1.0);
-        gpu.push(([v.x, v.y, v.z, v.w], colors[i]));
-    }
+    let buffer = world.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("meteor esp vertices"),
+        size: bytes.len() as u64,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    world.queue.write_buffer(&buffer, 0, &bytes);
 
-    if let Some(resources) = crate::gfx::meteor_bridge::pipeline(
-        world.device,
-        world.color_format,
-    ) {
-        // The buffer is rebuilt per frame: the ESP target set is tiny (a few
-        // dozen boxes at most) and this keeps the renderer free of retained
-        // state that could outlive the world it was built for.
-        use wgpu::util::DeviceExt;
-        let buffer = world.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("meteor esp lines"),
-            contents: bytemuck::cast_slice(&gpu),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-
-        let mut pass = world.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("meteor esp"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: world.color_view,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: world.depth,
-                depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                }),
-                stencil_ops: None,
+    let mut pass = world.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("meteor esp"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: world.color_view,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                // Load, not Clear: the world is already drawn underneath.
+                load: wgpu::LoadOp::Load,
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+            view: world.depth,
+            depth_ops: Some(wgpu::Operations {
+                load: wgpu::LoadOp::Load,
+                store: wgpu::StoreOp::Store,
             }),
-            timestamp_writes: None,
-            occlusion_query_set: None,
-        });
-        pass.set_pipeline(&resources.pipeline);
-        pass.set_vertex_buffer(0, buffer.slice(..));
-        pass.draw(0..count, 0..1);
-    }
-}
-
-/// Twelve edges of an axis-aligned box, as camera-relative endpoints.
-fn push_box(
-    verts: &mut Vec<[f32; 3]>,
-    colors: &mut Vec<[f32; 4]>,
-    min: [f32; 3],
-    max: [f32; 3],
-    c: [f32; 4],
-) {
-    let [x0, y0, z0] = min;
-    let [x1, y1, z1] = max;
-    let corners = [
-        [x0, y0, z0],
-        [x1, y0, z0],
-        [x1, y0, z1],
-        [x0, y0, z1],
-        [x0, y1, z0],
-        [x1, y1, z0],
-        [x1, y1, z1],
-        [x0, y1, z1],
-    ];
-    const EDGES: [(usize, usize); 12] = [
-        (0, 1),
-        (1, 2),
-        (2, 3),
-        (3, 0),
-        (4, 5),
-        (5, 6),
-        (6, 7),
-        (7, 4),
-        (0, 4),
-        (1, 5),
-        (2, 6),
-        (3, 7),
-    ];
-    for (a, b) in EDGES {
-        verts.push(corners[a]);
-        verts.push(corners[b]);
-        colors.push(c);
-        colors.push(c);
-    }
+            stencil_ops: None,
+        }),
+        timestamp_writes: None,
+        occlusion_query_set: None,
+    });
+    pass.set_pipeline(&resources.pipeline);
+    pass.set_vertex_buffer(0, buffer.slice(..));
+    pass.draw(0..vertex_count, 0..1);
 }

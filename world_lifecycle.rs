@@ -30,7 +30,9 @@ fn meteor_world_lifecycle(
         live.gui.open = false;
     });
 
-    // Drop the ESP renderer's GPU buffers: they belong to the world that is
-    // going away, and the next one builds its own.
+    // Drop the ESP boxes: they belong to the world that is going away. The
+    // renderer rebuilds its vertex buffer every frame, so clearing the shared
+    // list is all the cleanup it needs.
+    horizon_client_render::gfx::native_render::meteor_bridge::clear();
     m::reset_renderer();
 }

@@ -54,6 +54,25 @@ fn meteor_tick(game: &mut crate::game::Game<'_>) {
         m::with(|live| live.xray_hits.clear());
     }
 
+    // Publish this tick's boxes to the renderer. They cross into the render
+    // crate through the bridge module, because that crate cannot see this one.
+    let boxes: Vec<horizon_client_render::gfx::native_render::meteor_bridge::Box3> = m::with(|live| {
+        let color = m::argb_to_rgba(live.cfg.esp.argb);
+        live.targets
+            .iter()
+            .map(|t| horizon_client_render::gfx::native_render::meteor_bridge::Box3 {
+                x: t.x,
+                // A player's box starts at the feet.
+                y: t.y,
+                z: t.z,
+                width: 0.62,
+                height: 1.8,
+                color,
+            })
+            .collect()
+    });
+    horizon_client_render::gfx::native_render::meteor_bridge::set_boxes(boxes);
+
     // ---- SEAM 1: the world queries -------------------------------------
     // These two are the only places a game-world read is needed, and both need
     // one signature confirmed from the source, which this session could not

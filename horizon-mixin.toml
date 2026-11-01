@@ -17,6 +17,21 @@ file = "crates/horizon-client/src/game.rs"
 name = "official_meteor_horizon"
 source = "runtime.rs"
 
+# SEAM 2: the ESP bridge.
+#
+# `horizon-client` depends on `horizon-client-render`, never the reverse, so the
+# render hook cannot read the mod's state in the game crate. This support module
+# lives in the render crate and is `pub`, which is the documented way to let a
+# hook in a dependent crate call into it:
+#   game side:   horizon_client_render::gfx::native_render::meteor_bridge::set_boxes(..)
+#   render side:  meteor_bridge::boxes()  (sibling module)
+[[module]]
+id = "bridge"
+file = "crates/horizon-client-render/src/gfx/native_render.rs"
+name = "meteor_bridge"
+source = "bridge.rs"
+visibility = "pub"
+
 # ---------------------------------------------------------------- input ----
 
 # Every module keybind, the GUI key and the global toggle key.
